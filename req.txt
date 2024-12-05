@@ -1,4 +1,5 @@
 fastapi
 uvicorn
-chromadb
 PyPDF2
+cohere
+dotenv

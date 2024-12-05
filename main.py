@@ -5,7 +5,12 @@ from fastapi import FastAPI
 import chromadb
 from PyPDF2 import PdfReader
 from pydantic import BaseModel
-
+import cohere
+import numpy as np
+import json
+from dotenv import load_dotenv
+import os
+load_dotenv()
 class QueryRequest(BaseModel):
     query: str
 
@@ -54,22 +59,42 @@ for parrafo in parrafos:
 print("]")
 
 app = FastAPI()
+api_key = os.getenv('CO_API_KEY')
+co = cohere.ClientV2(api_key=api_key) 
+archivo_json = 'embed.json'
 
-chroma_client = chromadb.Client()
+try:
+    # Verificar si el archivo existe
+    if os.path.exists(archivo_json):
+        # Si el archivo existe, lo abrimos y leemos su contenido
+        print('recupera embed del json')
+        with open(archivo_json, 'r') as archivo:
+            doc_emb = json.load(archivo)
+    else:
+        print(f"El archivo '{archivo_json}' no existe.")
+        # Embed the documents
+        doc_emb = co.embed(
+                    model="embed-multilingual-v3.0",
+                    input_type="search_document",
+                    texts=parrafos,
+                    embedding_types=["float"]).embeddings.float
+        # Abrir el archivo en modo escritura (si no existe, se creará)
+        with open('embed.json', 'w') as archivo:
+            # Guardar el diccionario en el archivo en formato JSON
+            json.dump(doc_emb, archivo, indent=4)  # 'indent' agrega formato legible
+except KeyError as e:
+    print(f"An error occurred: {e}")
 
-# switch `create_collection` to `get_or_create_collection` to avoid creating a new collection every time
-collection = chroma_client.get_or_create_collection(name="my_collection")
-# switch `add` to `upsert` to avoid adding the same documents every time
-collection.upsert(
-    documents=parrafos,
-    ids = [str(i) for i in range(1, len(parrafos) + 1)]
-)
-results = collection.query(
-    query_texts=["animal bueno para la compañia"], # Chroma will embed this for you
-    n_results=2 # how many results to return
-)
-print(results)
 
+def return_results(query_emb, doc_emb, documents):
+    n = 2 # customize your top N results
+    scores = np.dot(query_emb, np.transpose(doc_emb))[0]
+    max_idx = np.argsort(-scores)[:n]
+    results = []
+    for rank, idx in enumerate(max_idx):
+        result = dict(rank=rank+1, score=scores[idx], document=documents[idx])
+        results.append(result)
+    return results
 
 @app.get("/")
 def read_root():
@@ -81,8 +106,13 @@ def read_item(item_id: int, q: Union[str, None] = None):
 
 @app.post("/query")
 async def get_query(request: QueryRequest):
-    results = collection.query(query_texts=request.query, n_results=3)
-    print(results)
+    # Embed the query
+    query_emb = co.embed(
+                model="embed-multilingual-v3.0",
+                input_type="search_query",
+                texts=[request.query],
+                embedding_types=["float"]).embeddings.float
+    results = return_results(query_emb, doc_emb, parrafos)
     return {"result": results}
 
 @app.post("/items")
